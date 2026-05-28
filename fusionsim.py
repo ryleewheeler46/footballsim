@@ -77,7 +77,7 @@ def calculate_rating(points, max_points):
 
 def import_from_apifootball(season):
     """
-    Import leagues and calculate team ratings from API-Football
+    Import ALL leagues and teams from API-Football.
     Returns a dict structured like:
     {
         "Premier League": {
@@ -99,16 +99,25 @@ def import_from_apifootball(season):
         # Return mock data if API fails or no key provided
         return get_mock_leagues_data()
     
-    # Process major leagues
-    major_league_ids = [39, 140, 61, 135, 78]  # Premier League, Ligue 1, Bundesliga, Serie A, La Liga
+    total_leagues = len(all_leagues)
+    print(f"Found {total_leagues} leagues. Processing all of them...")
     
-    for league_data in all_leagues:
+    processed = 0
+    for idx, league_data in enumerate(all_leagues):
         league_id = league_data.get('league', {}).get('id')
         league_name = league_data.get('league', {}).get('name')
-        country = league_data.get('country', '')
+        country = league_data.get('country', {}).get('name', 'Unknown')
+        seasons = league_data.get('seasons', [])
         
-        if league_id in major_league_ids or league_name in ["Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1"]:
-            standings = fetch_standings(league_id, season)
+        # Find valid season
+        valid_seasons = [s.get('year') for s in seasons if s.get('current', False)]
+        if not valid_seasons:
+            valid_seasons = [s.get('year') for s in seasons]
+        
+        target_season = season if season in valid_seasons else (valid_seasons[-1] if valid_seasons else 2024)
+        
+        try:
+            standings = fetch_standings(league_id, target_season)
             
             if standings:
                 teams_dict = {}
@@ -126,16 +135,22 @@ def import_from_apifootball(season):
                     for team_standing in standing_group.get('standings', []):
                         team_name = team_standing.get('team', {}).get('name', 'Unknown')
                         points = team_standing.get('points', 0)
-                        rating = calculate_rating(points, max_points)
+                        rating = calculate_rating(points, max_points) if max_points > 0 else 0.5
                         teams_dict[team_name] = rating
                 
                 if teams_dict:
                     result[league_name] = {"teams": teams_dict}
+                    processed += 1
+                    print(f"[{processed}/{total_leagues}] Processed: {league_name} ({country}) - {len(teams_dict)} teams")
+        except Exception as e:
+            print(f"Error processing {league_name}: {e}")
+            continue
     
     # If no data was fetched, return mock data
     if not result:
         return get_mock_leagues_data()
     
+    print(f"Import complete! {len(result)} leagues with {sum(len(l.get('teams', {})) for l in result.values())} total teams loaded.")
     return result
 
 
@@ -559,81 +574,268 @@ class FusionSimApp(ctk.CTk):
         messagebox.showinfo("Complete", "Simulation finished successfully!")
     
     def build_until(self):
-        """Build the until page"""
+        """Build the until page - Simulations Until Condition"""
         page = ctk.CTkFrame(self.main_area)
         self.pages["until"] = page
         
         # Title
         title = ctk.CTkLabel(
             page,
-            text="Until Condition",
+            text="Simulations Until",
             font=ctk.CTkFont(size=32, weight="bold")
         )
-        title.pack(pady=(40, 30))
+        title.pack(pady=(40, 10))
         
         # Description
         desc = ctk.CTkLabel(
             page,
-            text="Set conditions for when the simulation should stop",
-            font=ctk.CTkFont(size=16)
+            text="Set conditions for when the simulation should stop.\nConfigure multiple conditions for wins, losses, draws, goals, etc.",
+            font=ctk.CTkFont(size=14),
+            justify="center"
         )
-        desc.pack(pady=(0, 30))
+        desc.pack(pady=(0, 20))
         
-        # Conditions container
-        conditions_frame = ctk.CTkFrame(page)
-        conditions_frame.pack(pady=20, padx=40, fill="both", expand=True)
+        # Conditions container with scrollable frame
+        conditions_container = ctk.CTkScrollableFrame(page, width=800, height=500)
+        conditions_container.pack(pady=20, padx=40, fill="both", expand=True)
         
-        # Condition type
-        type_label = ctk.CTkLabel(conditions_frame, text="Condition Type:", font=ctk.CTkFont(size=14))
-        type_label.pack(anchor="w", padx=20, pady=(15, 5))
+        # Store condition widgets for later retrieval
+        self.condition_widgets = {}
         
-        self.condition_type = ctk.CTkComboBox(
-            conditions_frame,
-            values=["Max Iterations", "Target Score", "Time Limit", "Convergence"],
-            width=300
+        # Define all stat types with their default values
+        stat_types = [
+            ("Wins", "wins", 0),
+            ("Losses", "losses", 0),
+            ("Draws", "draws", 0),
+            ("Goals Scored", "goals", 0),
+            ("Goals Conceded", "goals_conceded", 0),
+            ("Points", "points", 0)
+        ]
+        
+        # Operator options
+        operators = ["< (Less Than)", "= (Equal To)", "> (Greater Than)", 
+                     "<= (Less or Equal)", ">= (Greater or Equal)", "!= (Not Equal)"]
+        
+        # Create a condition row for each stat type
+        for row, (label, stat_key, default_value) in enumerate(stat_types):
+            # Frame for this condition
+            cond_frame = ctk.CTkFrame(conditions_container)
+            cond_frame.pack(fill="x", padx=10, pady=5)
+            
+            # Label
+            stat_label = ctk.CTkLabel(cond_frame, text=f"{label}:", font=ctk.CTkFont(size=14, weight="bold"), width=120)
+            stat_label.pack(side="left", padx=10, pady=10)
+            
+            # Operator dropdown
+            op_var = ctk.StringVar(value="< (Less Than)")
+            op_dropdown = ctk.CTkComboBox(
+                cond_frame,
+                values=operators,
+                variable=op_var,
+                width=180
+            )
+            op_dropdown.pack(side="left", padx=5, pady=10)
+            
+            # Value entry
+            value_entry = ctk.CTkEntry(cond_frame, width=100, placeholder_text="Value")
+            value_entry.pack(side="left", padx=5, pady=10)
+            value_entry.insert(0, str(default_value))
+            
+            # Enable checkbox
+            enable_var = ctk.BooleanVar(value=False)
+            enable_checkbox = ctk.CTkCheckBox(
+                cond_frame,
+                text="Enable",
+                variable=enable_var,
+                width=80
+            )
+            enable_checkbox.pack(side="left", padx=15, pady=10)
+            
+            # Store widgets
+            self.condition_widgets[stat_key] = {
+                'operator': op_dropdown,
+                'value': value_entry,
+                'enabled': enable_var
+            }
+        
+        # Additional settings section
+        settings_frame = ctk.CTkFrame(conditions_container)
+        settings_frame.pack(fill="x", padx=10, pady=20)
+        
+        settings_title = ctk.CTkLabel(settings_frame, text="Additional Settings", font=ctk.CTkFont(size=16, weight="bold"))
+        settings_title.pack(padx=10, pady=(10, 5))
+        
+        # Max iterations fallback
+        max_iter_frame = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        max_iter_frame.pack(fill="x", padx=10, pady=5)
+        
+        max_iter_label = ctk.CTkLabel(max_iter_frame, text="Max Iterations (fallback):", font=ctk.CTkFont(size=14))
+        max_iter_label.pack(side="left", padx=5)
+        
+        self.max_iterations_entry = ctk.CTkEntry(max_iter_frame, width=100)
+        self.max_iterations_entry.pack(side="left", padx=5)
+        self.max_iterations_entry.insert(0, "10000")
+        
+        # Logic operator (AND/OR)
+        logic_frame = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        logic_frame.pack(fill="x", padx=10, pady=5)
+        
+        logic_label = ctk.CTkLabel(logic_frame, text="Condition Logic:", font=ctk.CTkFont(size=14))
+        logic_label.pack(side="left", padx=5)
+        
+        self.logic_switch = ctk.CTkSwitch(
+            logic_frame,
+            text="AND (all must be true)",
+            onvalue="AND",
+            offvalue="OR"
         )
-        self.condition_type.pack(padx=20, pady=5)
-        self.condition_type.set("Max Iterations")
+        self.logic_switch.pack(side="left", padx=5)
+        self.logic_switch.select()  # Default to AND
         
-        # Threshold value
-        threshold_label = ctk.CTkLabel(conditions_frame, text="Threshold Value:", font=ctk.CTkFont(size=14))
-        threshold_label.pack(anchor="w", padx=20, pady=(15, 5))
+        # Action buttons
+        btn_frame = ctk.CTkFrame(page, fg_color="transparent")
+        btn_frame.pack(pady=20)
         
-        self.threshold_entry = ctk.CTkEntry(conditions_frame, width=200)
-        self.threshold_entry.pack(padx=20, pady=5)
-        self.threshold_entry.insert(0, "1000")
-        
-        # Advanced options
-        advanced_frame = ctk.CTkFrame(conditions_frame)
-        advanced_frame.pack(padx=20, pady=20, fill="x")
-        
-        advanced_title = ctk.CTkLabel(advanced_frame, text="Advanced Options", font=ctk.CTkFont(size=14, weight="bold"))
-        advanced_title.pack(padx=15, pady=(10, 5))
-        
-        self.auto_stop_switch = ctk.CTkSwitch(advanced_frame, text="Auto-stop on convergence")
-        self.auto_stop_switch.pack(padx=15, pady=5, anchor="w")
-        
-        self.notify_switch = ctk.CTkSwitch(advanced_frame, text="Notify when complete")
-        self.notify_switch.pack(padx=15, pady=5, anchor="w")
-        self.notify_switch.select()
-        
-        # Save button
         save_btn = ctk.CTkButton(
-            conditions_frame,
-            text="Save Condition",
-            command=self.save_condition,
-            width=200
+            btn_frame,
+            text="💾 Save Conditions",
+            command=self.save_until_conditions,
+            width=180,
+            height=40
         )
-        save_btn.pack(pady=20)
+        save_btn.pack(side="left", padx=10)
+        
+        clear_btn = ctk.CTkButton(
+            btn_frame,
+            text="🗑️ Clear All",
+            command=self.clear_until_conditions,
+            width=150,
+            height=40,
+            fg_color="#DC3545"
+        )
+        clear_btn.pack(side="left", padx=10)
+        
+        test_btn = ctk.CTkButton(
+            btn_frame,
+            text="🧪 Test Conditions",
+            command=self.test_conditions,
+            width=150,
+            height=40
+        )
+        test_btn.pack(side="left", padx=10)
+        
+        # Status label
+        self.until_status = ctk.CTkLabel(
+            page,
+            text="No conditions set",
+            font=ctk.CTkFont(size=12)
+        )
+        self.until_status.pack(pady=10)
     
-    def save_condition(self):
-        """Save the until condition"""
-        condition_type = self.condition_type.get()
-        threshold = self.threshold_entry.get()
+    def save_until_conditions(self):
+        """Save the until conditions"""
+        conditions = {}
+        enabled_count = 0
+        
+        for stat_key, widgets in self.condition_widgets.items():
+            if widgets['enabled'].get():
+                try:
+                    value = int(widgets['value'].get())
+                    operator = widgets['operator'].get()
+                    conditions[stat_key] = {
+                        'operator': operator,
+                        'value': value
+                    }
+                    enabled_count += 1
+                except ValueError:
+                    pass
+        
+        if not conditions:
+            messagebox.showwarning("Warning", "Please enable at least one condition!")
+            return
+        
+        logic = "AND" if self.logic_switch.get() else "OR"
+        max_iter = self.max_iterations_entry.get()
+        
+        self.until_status.configure(text=f"{enabled_count} condition(s) saved | Logic: {logic} | Max iterations: {max_iter}")
         
         messagebox.showinfo(
-            "Condition Saved",
-            f"Condition saved:\nType: {condition_type}\nThreshold: {threshold}"
+            "Conditions Saved",
+            f"Saved {enabled_count} condition(s):\n\n" +
+            "\n".join([f"• {key}: {cond['operator']} {cond['value']}" for key, cond in conditions.items()]) +
+            f"\n\nLogic: {logic}\nMax Iterations: {max_iter}"
+        )
+    
+    def clear_until_conditions(self):
+        """Clear all conditions"""
+        for stat_key, widgets in self.condition_widgets.items():
+            widgets['enabled'].set(False)
+            # Reset to default values
+            defaults = {'wins': 0, 'losses': 0, 'draws': 0, 'goals': 0, 'goals_conceded': 0, 'points': 0}
+            widgets['value'].delete(0, 'end')
+            widgets['value'].insert(0, str(defaults.get(stat_key, 0)))
+            widgets['operator'].set("< (Less Than)")
+        
+        self.until_status.configure(text="All conditions cleared")
+    
+    def test_conditions(self):
+        """Test the current conditions with sample data"""
+        conditions = {}
+        
+        for stat_key, widgets in self.condition_widgets.items():
+            if widgets['enabled'].get():
+                try:
+                    value = int(widgets['value'].get())
+                    operator = widgets['operator'].get()
+                    conditions[stat_key] = {'operator': operator, 'value': value}
+                except ValueError:
+                    pass
+        
+        if not conditions:
+            messagebox.showwarning("Warning", "Please enable at least one condition first!")
+            return
+        
+        # Sample test data
+        test_data = {
+            'wins': 5,
+            'losses': 2,
+            'draws': 3,
+            'goals': 15,
+            'goals_conceded': 8,
+            'points': 18
+        }
+        
+        def check_condition(stat_value, operator, target_value):
+            op_symbol = operator.split()[0]
+            if op_symbol == '<':
+                return stat_value < target_value
+            elif op_symbol == '=':
+                return stat_value == target_value
+            elif op_symbol == '>':
+                return stat_value > target_value
+            elif op_symbol == '<=':
+                return stat_value <= target_value
+            elif op_symbol == '>=':
+                return stat_value >= target_value
+            elif op_symbol == '!=':
+                return stat_value != target_value
+            return False
+        
+        logic = "AND" if self.logic_switch.get() else "OR"
+        results = []
+        
+        for stat_key, cond in conditions.items():
+            actual_value = test_data.get(stat_key, 0)
+            passed = check_condition(actual_value, cond['operator'], cond['value'])
+            results.append(f"• {stat_key}: {actual_value} {cond['operator']} {cond['value']} → {'✓ PASS' if passed else '✗ FAIL'}")
+        
+        all_passed = all('PASS' in r for r in results) if logic == "AND" else any('PASS' in r for r in results)
+        
+        messagebox.showinfo(
+            "Test Results",
+            f"Test Data: {test_data}\nLogic: {logic}\n\n" +
+            "\n".join(results) +
+            f"\n\nOverall: {'✓ ALL CONDITIONS MET' if all_passed else '✗ CONDITIONS NOT MET'}"
         )
     
     def build_importer(self):
